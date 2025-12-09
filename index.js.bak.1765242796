@@ -1,0 +1,142 @@
+'use strict';
+const express = require('express');
+const axios = require('axios');
+const { body, validationResult } = require('express-validator');
+const swaggerUi = require('swagger-ui-express');
+
+const app = express();
+app.use(express.json());
+
+// Health
+app.get('/healthz', (_req, res) => res.json({ ok: true }));
+
+// Swagger (dynamic server URL)
+const baseSpec = {
+  openapi: '3.0.3',
+  info: {
+    title: 'Azure Face Bridge',
+    version: '1.0.1',
+    description: 'Bridge to Azure Face API /detect using an image URL. Attributes now limited to qualityForRecognition.'
+  },
+  paths: {
+    '/face/detect': {
+      post: {
+        tags: ['Face'],
+        summary: 'Detect faces via Azure Face API',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['imageUrl'],
+                properties: {
+                  imageUrl: {
+                    type: 'string',
+                    format: 'uri',
+                    example: 'https://raw.githubusercontent.com/Azure-Samples/cognitive-services-sample-data-files/master/Face/images/Family1-Dad1.jpg'
+                  },
+                  returnFaceAttributes: {
+                    type: 'string',
+                    description: 'Optional. Only "qualityForRecognition" is supported by Azure.',
+                    example: 'qualityForRecognition'
+                  }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          200: { description: 'OK - Azure Face API response array' },
+          400: { description: 'Bad request' },
+          500: { description: 'Server/config error' },
+          502: { description: 'Upstream Face API error' }
+        }
+      }
+    }
+  }
+};
+
+app.get('/openapi.json', (req, res) => {  const proto = req.headers['x-forwarded-proto'] || req.protocol;  const host = req.get('host');  const prefix = req.headers['x-forwarded-prefix'] || '';  res.json({ ...baseSpec, servers: [{ url:  }] });});
+});
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(null, { swaggerOptions: { url: '/face/openapi.json' } }));
+
+// Allowed Azure attributes (others are deprecated)
+const ALLOWED_ATTRS = new Set(['qualityForRecognition']);
+
+// POST /face/detect
+app.post(
+  '/face/detect',
+  [
+    body('imageUrl').isURL().withMessage('imageUrl must be a valid URL'),
+    body('returnFaceAttributes').optional().isString()
+  ],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+      const endpoint = process.env.AZURE_FACE_ENDPOINT;
+      const key = process.env.AZURE_FACE_KEY;
+      if (!endpoint || !key) {
+        return res.status(500).json({ error: 'Missing AZURE_FACE_ENDPOINT or AZURE_FACE_KEY' });
+      }
+
+      const { imageUrl, returnFaceAttributes } = req.body;
+
+      // Filter attributes to only supported ones
+      let attrs = '';
+      if (returnFaceAttributes) {
+        const requested = returnFaceAttributes.split(',').map(s => s.trim()).filter(Boolean);
+        const allowed = requested.filter(a => ALLOWED_ATTRS.has(a));
+        if (requested.length && !allowed.length) {
+          return res.status(400).json({
+            error: 'Unsupported returnFaceAttributes',
+            requested,
+            allowedOptions: Array.from(ALLOWED_ATTRS)
+          });
+        }
+        if (allowed.length) attrs = allowed.join(',');
+      }
+
+      const params = new URLSearchParams({
+        returnFaceId: 'false',
+        detectionModel: 'detection_03',
+        
+        returnFaceLandmarks: 'false'
+      });
+      if (attrs) params.set('returnFaceAttributes', attrs);
+
+      const url = `${endpoint.replace(/\/+$/, '')}/face/v1.0/detect?${params.toString()}`;
+
+      const resp = await axios.post(
+        url,
+        { url: imageUrl },
+        {
+          headers: {
+            'Ocp-Apim-Subscription-Key': key,
+            'Content-Type': 'application/json'
+          },
+          timeout: 15000
+        }
+      );
+
+      res.json(resp.data);
+    } catch (err) {
+      if (err.response) {
+        return res.status(err.response.status || 502).json({
+          error: 'Upstream Face API error',
+          status: err.response.status,
+          data: err.response.data
+        });
+      }
+      next(err);
+    }
+  }
+);
+
+const PORT = process.env.PORT || 6000;
+const HOST = process.env.HOST || '0.0.0.0';
+app.listen(PORT, HOST, () => {
+  console.log(`Face bridge listening at http://${HOST}:${PORT}`);
+});
