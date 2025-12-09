@@ -67,7 +67,7 @@ const baseSpec = {
                 type: 'object',
                 required: ['imageUrl'],
                 properties: {
-                  imageUrl: { type: 'string', format: 'uri', example: 'https://aka.ms/azai/visionsample.jpg' },
+                  imageUrl: { type: 'string', format: 'uri', example: 'https://raw.githubusercontent.com/Azure-Samples/cognitive-services-sample-data-files/master/ComputerVision/Images/landmark.jpg' },
                   features: {
                     type: 'array',
                     items: { type: 'string', enum: ['Caption', 'Tags', 'Objects'] },
